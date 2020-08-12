@@ -1,6 +1,7 @@
 
 module Evaluation where
 
+import Data.List
 import Types
 import ElabState
 
@@ -49,21 +50,35 @@ vAppSp h = go where
   go (SProj2 sp)      = vProj2 (go sp)
   go (SDown sp)       = vDown (go sp)
 
-vStage :: StageExp -> StageExp
-vStage = \case
-  StageExp (SHVar x) n | Just (StageExp h n') <- runLookupStageVar x ->
-    vStage (StageExp h (n + n'))
+vAddStage :: VStage -> Int -> VStage
+vAddStage (VSFin h n) m = VSFin h (n + m)
+vAddStage VOmega      _ = error "impossible"
+
+vStageVar :: Vals -> Ix -> VStage
+vStageVar vs x = undefined
+
+vStage :: Vals -> StageTm -> VStage
+vStage vs = \case
+  SZero  -> VSZero
+  SSuc s -> VSSuc (vStage vs s)
+  SVar x -> vStageVar vs x
+  SOmega -> VOmega
+
+forceStage :: VStage -> VStage
+forceStage = \case
+  VSFin (SHMeta x) n | SESolved s <- runLookupStageVar x ->
+    forceStage (vAddStage s n)
   s -> s
 
-sExp2Lit :: StageExp -> Stage
-sExp2Lit s = go 0 (vStage s) where
-  go acc SZero    = acc
-  go acc (SSuc s) = go (acc + 1) s
-  go _   _        = error "impossible"
+sExp2Lit :: VStage -> Stage
+sExp2Lit s = go 0 (forceStage s) where
+  go acc VSZero    = acc
+  go acc (VSSuc s) = go (acc + 1) s
+  go _   _         = error "impossible"
 
-vPred :: HasCallStack => StageExp -> StageExp
-vPred s = case vStage s of
-  SSuc e         -> e
+sPred :: HasCallStack => VStage -> VStage
+sPred s = case forceStage s of
+  VSSuc e        -> e
   e              -> error "impossible"
 
 vUp :: Val -> Val
@@ -83,31 +98,39 @@ valsTail = \case
   VSkip vs  -> vs
   _         -> error "impossible"
 
+defStages :: [VStage] -> Vals -> Vals
+defStages ts vs = foldl' VDefStage vs ts
+
 eval :: Vals -> Tm -> Val
 eval vs = go where
   go = \case
-    Var x         -> vVar x vs
-    Let x _ _ t u -> goBind u (go t)
-    U s           -> VU (vStage s)
-    Meta m        -> vMeta m
-    Pi x i a b    -> VPi x i (go a) (goBind b)
-    Lam x i o a t -> VLam x i o (go a) (goBind t)
-    App t u i o   -> vApp (go t) (go u) i o
-    Tel s         -> VTel (vStage s)
-    TEmpty        -> VTEmpty
-    TCons x a b   -> VTCons x (go a) (goBind b)
-    Rec a         -> VRec (go a)
-    Tempty        -> VTempty
-    Tcons t u     -> VTcons (go t) (go u)
-    Proj1 t       -> vProj1 (go t)
-    Proj2 t       -> vProj2 (go t)
-    Skip t        -> eval (VSkip vs) t
-    Wk t          -> eval (valsTail vs) t
-    Code a        -> VCode (go a)
-    Up t          -> vUp (go t)
-    Down t        -> vDown (go t)
+    Var x          -> vVar x vs
+    Let x _ _ t u  -> goBind u (go t)
+    U s            -> VU (vStage vs s)
+    Meta m         -> vMeta m
+    Pi x i a b     -> VPi x i (go a) (goBind b)
+    Lam x i o a t  -> VLam x i o (go a) (goBind t)
+    App t u i o    -> vApp (go t) (go u) i o
+    Tel s          -> VTel (vStage vs s)
+    TEmpty         -> VTEmpty
+    TCons x a b    -> VTCons x (go a) (goBind b)
+    Rec a          -> VRec (go a)
+    Tempty         -> VTempty
+    Tcons t u      -> VTcons (go t) (go u)
+    Proj1 t        -> vProj1 (go t)
+    Proj2 t        -> vProj2 (go t)
+    Skip t         -> eval (VSkip vs) t
+    Wk t           -> eval (valsTail vs) t
+    Code a         -> VCode (go a)
+    Up t           -> vUp (go t)
+    Down t         -> vDown (go t)
+    PiStage xs t s -> VPiStage xs $ \ts -> let vs' = defStages ts vs in _
+      -- VPiStage xs (\ts -> let vs' = defStages ts vs in (eval vs' t, vStage vs' s))
 
   goBind t ~v = eval (VDef vs v) t
+
+quoteStage :: Lvl -> VStage -> StageTm
+quoteStage d = undefined
 
 -- | Quote a beta-normal form from a `Val`.
 quote :: Lvl -> Val -> Tm
@@ -126,8 +149,8 @@ quote d = go where
 
     VLam x i o a t -> Lam x i o (go a) (goBind t)
     VPi x i a b    -> Pi x i (go a) (goBind b)
-    VU s           -> U (vStage s)
-    VTel s         -> Tel (vStage s)
+    VU s           -> U (quoteStage d s)
+    VTel s         -> Tel (quoteStage d s)
     VRec a         -> Rec (go a)
     VTEmpty        -> TEmpty
     VTCons x a as  -> TCons x (go a) (goBind as)

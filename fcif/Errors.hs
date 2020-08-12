@@ -32,7 +32,7 @@ data ElabError
   | ExpectedFunction Tm
   | IcitMismatch Icit Icit
   | ExpectedType Tm
-  | StageError StageExp StageExp
+  | StageError StageTm StageTm
 
 data Err = Err {
   errCxt :: Cxt,

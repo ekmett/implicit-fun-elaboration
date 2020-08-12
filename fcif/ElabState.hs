@@ -60,36 +60,32 @@ stages :: IORef StageCxt
 stages = runIO (newIORef mempty)
 {-# noinline stages #-}
 
-lookupStageVar :: StageId -> IO (Maybe StageExp)
+lookupStageVar :: StageId -> IO StageEntry
 lookupStageVar s = do
   ss <- readIORef stages
   case IM.lookup s ss of
     Just e -> pure e
     _      -> error "impossible"
 
-runLookupStageVar :: StageId -> Maybe StageExp
+runLookupStageVar :: StageId -> StageEntry
 runLookupStageVar m = runIO (lookupStageVar m)
 
-alterStageVar :: StageId -> (Maybe (Maybe StageExp) -> Maybe (Maybe StageExp)) -> IO ()
+alterStageVar :: StageId -> (Maybe StageEntry -> Maybe StageEntry) -> IO ()
 alterStageVar m f = modifyIORef' stages (IM.alter f m)
 
-modifyStageVar :: StageId -> (Maybe StageExp -> Maybe StageExp) -> IO ()
+modifyStageVar :: StageId -> (StageEntry -> StageEntry) -> IO ()
 modifyStageVar m f = alterStageVar m (maybe (error "impossible") (Just . f))
 
-writeStageVar :: StageId -> Maybe StageExp -> IO ()
+writeStageVar :: StageId -> StageEntry -> IO ()
 writeStageVar m e = modifyStageVar m (const e)
 
-newStageVar :: Maybe StageExp -> IO StageId
+newStageVar :: StageEntry -> IO StageId
 newStageVar e = do
   m <- readIORef nextStageId
   writeIORef nextStageId $! (m + 1)
   alterStageVar m (maybe (Just e) (\_ -> error "impossible"))
   pure m
 
--- | Solve all ambiguous stages to 0.
-solveStagesTo0 :: IO ()
-solveStagesTo0 =
-  modifyIORef' stages $ IM.map (Just . maybe SZero id)
 
 --------------------------------------------------------------------------------
 

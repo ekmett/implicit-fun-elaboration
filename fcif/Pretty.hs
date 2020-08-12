@@ -2,6 +2,7 @@
 
 module Pretty (showTm, showTopTm, dbgVal, dbgTm) where
 
+import Data.List
 import Lens.Micro.Platform
 import Prelude hiding (pi)
 import Types
@@ -29,13 +30,16 @@ fresh ns x = x
 bracket :: ShowS -> ShowS
 bracket s = ('{':).s.('}':)
 
-stage :: StageExp -> ShowS
-stage s = case vStage s of
-  StageExp (SHVar x) 0 -> ('?':).(show x++)
-  StageExp (SHVar x) n -> showParen True (('?':).(show x++).(" + "++).(show n++))
-  StageExp SHZero    n -> (show n++)
+stage :: StageTm -> ShowS
+stage s = case forceStage s of
+  SFin (SHMeta x) 0 -> ('?':).(show x++)
+  SFin (SHMeta x) n -> showParen True (('?':).(show x++).(" + "++).(show n++))
+  SFin (SHVar x)  0 -> (show x++)
+  SFin (SHVar x)  n -> showParen True ((show x++).(" + "++).(show n++))
+  SFin SHZero n     -> (show n++)
+  SOmega            -> ('ω':)
 
-instance Show StageExp where
+instance Show StageTm where
   show s = stage s []
 
 -- | Prints a spine, also returns whether a) the spine is meta-headed,
@@ -133,6 +137,10 @@ tm p ns = go p where
     Code a -> par p appp $ ("^"++) . go atomp a
     Up t   -> ('<':).go tmp t.('>':)
     Down t -> ('[':).go tmp t.(']':)
+
+    PiStage xs t s -> par p tmp $ ("∀ "++). (intercalate " " xs ++). (". "++). go tmp t
+    AppStage t ts  -> par p appp $ go appp t . foldr (\t acc -> (' ':).stage t.acc) id ts
+    LamStage xs t  -> par p tmp $ ("λ "++). (intercalate " " xs ++). (". "++). go tmp t
 
 -- | We specialcase printing of top lambdas, since they are usually used
 --   to postulate stuff. We use '*' in a somewhat hacky way to mark

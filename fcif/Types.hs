@@ -31,23 +31,32 @@ instance Show Icit where
 type Stage   = Int
 type StageId = Int
 
-data SHead = SHVar StageId | SHZero deriving (Eq)
-data StageExp = StageExp SHead Int
+data SHead = SHMeta StageId | SHVar Lvl | SHZero deriving (Eq)
 
-pattern SSuc :: StageExp -> StageExp
-pattern SSuc s <- ((\case StageExp h n | n > 0     -> Just (StageExp h (n - 1))
-                                       | otherwise -> Nothing) -> Just s)
-                 where
-  SSuc (StageExp h n) = StageExp h (n + 1)
+data StageTm = SZero | SSuc StageTm | SMeta StageId | SVar Ix | SOmega
 
-pattern SZero :: StageExp
-pattern SZero = StageExp SHZero 0
+data VStage = VSFin SHead Int | VOmega
 
-pattern SVar :: StageId -> StageExp
-pattern SVar x = StageExp (SHVar x) 0
+  -- SFin SHead Int | SOmega
 
-sLit :: Stage -> StageExp
-sLit = StageExp SHZero
+pattern VSSuc :: VStage -> VStage
+pattern VSSuc s <- ((\case VSFin h n | n > 0 -> Just (VSFin h (n - 1))
+                           _                 -> Nothing) -> Just s) where
+  VSSuc (VSFin h n) = VSFin h (n + 1)
+  VSSuc _           = error "impossible"
+
+pattern VSZero :: VStage
+pattern VSZero = VSFin SHZero 0
+
+pattern VSVar :: Lvl -> VStage
+pattern VSVar x = VSFin (SHVar x) 0
+
+pattern VSMeta :: StageId -> Int -> VStage
+pattern VSMeta m n = VSFin (SHMeta m) n
+
+sFin :: Stage -> VStage
+sFin = VSFin SHZero
+
 
 icit :: Icit -> a -> a -> a
 icit Impl i e = i
@@ -80,7 +89,7 @@ deriving instance Show Raw
 type MId = Int
 
 data MetaEntry
-  = Unsolved ~VTy ~StageExp
+  = Unsolved ~VTy ~StageTm
   | Solved Val
 
 -- | A partial mapping from levels to levels. Undefined domain represents
@@ -105,20 +114,29 @@ skipStr :: Str -> Str
 skipStr (Str c d r occ) = Str c (d + 1) r occ
 
 -- | Value environment. `VSkip` skips over a bound variable.
-data Vals  = VNil | VDef Vals ~Val | VSkip Vals
+data Vals
+  = VNil
+  | VDef Vals ~Val
+  | VSkip Vals
+  | VDefStage Vals VStage
+  | VSkipStage Vals
 
 -- | Type environment.
-data Types = TNil | TDef Types ~VTy StageExp | TBound Types ~VTy StageExp
+data Types =
+  TNil | TDef Types ~VTy StageTm | TBound Types ~VTy StageTm | TStage Types
+
+
+data StageEntry = SEUnsolved Lvl | SESolved VStage
 
 type Ix       = Int
 type Lvl      = Int
 type Ty       = Tm
 type VTy      = Val
 type MCxt     = IM.IntMap MetaEntry
-type StageCxt = IM.IntMap (Maybe StageExp)
+type StageCxt = IM.IntMap StageEntry
 
 -- | Extending `Types` with any type.
-pattern TSnoc :: Types -> VTy -> StageExp -> Types
+pattern TSnoc :: Types -> VTy -> StageTm -> Types
 pattern TSnoc as a s <- ((\case TBound as a s -> Just (as, a, s)
                                 TDef as a s   -> Just (as, a, s)
                                 TNil          -> Nothing) -> Just (as, a, s))
@@ -147,17 +165,21 @@ lvlName cxt x = cxtNames cxt !! (cxtLen cxt - x - 1)
 
 data Tm
   = Var Ix                      -- ^ x
-  | Let Name Ty StageExp Tm Tm  -- ^ let x : A : U i = t in u
+  | Let Name Ty StageTm Tm Tm  -- ^ let x : A : U i = t in u
 
   | Pi Name Icit Ty Ty         -- ^ (x : A : U i) → B)  or  {x : A : U i} → B
   | Lam Name Icit Origin Ty Tm -- ^ λ(x : A).t  or  λ{x : A}.t
   | App Tm Tm Icit Origin      -- ^ t u  or  t {u}
 
+  | PiStage [Name] Tm StageTm
+  | AppStage Tm [StageTm]
+  | LamStage [Name] Tm
+
   | Code Tm             -- ^ ^A
   | Up Tm               -- ^ <t>
-  | Down Tm             -- ^ ~t
+  | Down Tm             -- ^ [t]
 
-  | Tel StageExp      -- ^ Tel
+  | Tel StageTm       -- ^ Tel
   | TEmpty            -- ^ ε
   | TCons Name Ty Ty  -- ^ (x : A) ▷ B
   | Rec Tm            -- ^ Rec A
@@ -166,12 +188,11 @@ data Tm
   | Tcons Tm Tm       -- ^ t :: u
   | Proj1 Tm          -- ^ π₁ t
   | Proj2 Tm          -- ^ π₂ t
-
-  | U StageExp        -- ^ U i
+  | U StageTm         -- ^ U i
   | Meta MId          -- ^ α
 
-  | Skip Tm           -- ^ explicit strengthening (convenience feature for closing types)
-  | Wk Tm             -- ^ explicit weakening (convenience feature for ^ coercion)
+  | Skip Tm           -- ^ explicit strengthening
+  | Wk Tm             -- ^ explicit weakening
 
 data Spine
   = SNil
@@ -182,9 +203,11 @@ data Spine
 
 valsLen :: Vals -> Int
 valsLen = go 0 where
-  go acc VNil        = acc
-  go acc (VDef vs _) = go (acc + 1) vs
-  go acc (VSkip vs)  = go (acc + 1) vs
+  go acc VNil             = acc
+  go acc (VDef vs _)      = go (acc + 1) vs
+  go acc (VSkip vs)       = go (acc + 1) vs
+  go acc (VSkipStage vs)  = go (acc + 1) vs
+  go acc (VDefStage vs _) = go (acc + 1) vs
 
 data Head
   = HVar Lvl
@@ -196,12 +219,16 @@ data Val
 
   | VPi Name Icit ~VTy (VTy -> VTy)
   | VLam Name Icit Origin ~VTy (Val -> Val)
-  | VU StageExp
+  | VU VStage
 
   | VCode VTy
   | VUp Val
 
-  | VTel StageExp
+  | VPiStage [Name] ([VStage] -> (VTy, VStage))
+  | VLamStage [Name] ([VStage] -> Val)
+  | VAppStage Val [VStage]
+
+  | VTel VStage
   | VRec ~Val
   | VTEmpty
   | VTCons Name ~Val (Val -> Val)
