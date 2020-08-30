@@ -10,7 +10,7 @@ Assumes that input is zonked, i.e. that all solved metas are unfolded.
 
 module Staging (stage)  where
 
-import Types (Name, Lvl, MId, Icit(..), Stage, Tm(..), Ix, sLit, Origin(..))
+import Types (Name, Lvl, MId, Icit(..), Stage, Tm(..), Ix, Origin(..), sFin)
 import Evaluation (sExp2Lit)
 
 type VTy = Val
@@ -135,7 +135,7 @@ quote d = go where
   go v = case v of
     VVar x         -> Var (d - x - 1)
     VMeta m        -> Meta m
-    VLet x a s t u -> Let x (go a) (sLit s) (go t) (goBind u)
+    VLet x a s t u -> Let x (go a) (sFin s) (go t) (goBind u)
     VApp t u i o   -> App (go t) (go u) i o
     VCode a        -> Code (go a)
     VUp t          -> Up (go t)
@@ -144,8 +144,8 @@ quote d = go where
     VProj2 t       -> Proj2 (go t)
     VLam x i o a t -> Lam x i o (go a) (goBind t)
     VPi x i a b    -> Pi x i (go a) (goBind b)
-    VU s           -> U (sLit s)
-    VTel s         -> Tel (sLit s)
+    VU s           -> U (sFin s)
+    VTel s         -> Tel (sFin s)
     VRec a         -> Rec (go a)
     VTEmpty        -> TEmpty
     VTCons x a as  -> TCons x (go a) (goBind as)
